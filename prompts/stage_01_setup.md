@@ -31,6 +31,7 @@ Keep helpers in `orbit_explorer.py` for now (no separate modules yet).
    - Short description of the educational goal
    - List the 8 stages
    - How to create the venv, install deps, and run the script
+   - Brief note on input data (zip → `data/input/`)
 
 2. **Create the project folder + venv-friendly deps**
    - Add `satellite_orbit_explorer/requirements.txt` with at least: `matplotlib`, `requests`
@@ -51,17 +52,27 @@ Keep helpers in `orbit_explorer.py` for now (no separate modules yet).
      `PROJECT_DIR` = directory containing this script
      `IN_DIR` = `PROJECT_DIR / "data" / "input"`
      `OUT_DIR` = `PROJECT_DIR / "data" / "output"`
-     Create both directories
-   - If `input_data/orbit_workshop_inputs.zip` (at the repo root) exists, unzip it into `IN_DIR`. If missing, stop with a clear error — do not invent files
+     `REPO_ROOT` = `PROJECT_DIR.parent`
+     `INPUT_ZIP` = `REPO_ROOT / "input_data" / "orbit_workshop_inputs.zip"`
+     Create `IN_DIR` and `OUT_DIR`
    - Config: `STEP_SECONDS = 5`, `DURATION_HOURS = 24`, `LIVE_GROUP = None`
+   - Required input names constant, e.g. `REQUIRED_INPUT_FILES` =
+     `orbital_elements.json`, `data_manifest.json`, `world_map.txt`
+   - **`extract_inputs()`** (final unpack design — reuse in later stages):
+     - If all three required files are already in `IN_DIR`, do nothing (short “already present” note)
+     - Else if `INPUT_ZIP` exists and `zipfile.is_zipfile` passes, extract **only those three files** into `IN_DIR`
+     - Else stop with a clear error (place the zip under `input_data/`) — do not invent files
+     - Always finish by verifying all three paths `is_file()`; if any are missing, raise a clear error listing them
    - Short comments explaining: what `MU` and Earth radius are for; why we use UTC; units are km and km/s
-   - An `if __name__ == "__main__":` block that prints the configuration (paths, constants, step, duration)
+   - An `if __name__ == "__main__":` block that calls `extract_inputs()` and prints the configuration (paths, constants, step, duration)
 
 4. **Conventions:** UTC-aware datetimes, km, km/s.
 
 5. **Success check:** run
    `python orbit_explorer.py`
    and show the real terminal output. Stop after Stage 1.
+
+**Note:** Stage 2 adds `read_gp_json` and prints satellite records. Do not load/parse GP JSON in Stage 1 beyond ensuring the files are present via `extract_inputs()`.
 
 ---
 

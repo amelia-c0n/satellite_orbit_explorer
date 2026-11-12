@@ -54,28 +54,148 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 STEP_SECONDS = 5
 DURATION_HOURS = 24
 
-# Optional later: live CelesTrak group download. Unused in Stage 1.
+# Optional later: live CelesTrak group download. Unused in early stages.
 LIVE_GROUP = None
 
 # Repo-root zip with workshop GP JSON and supporting files.
 REPO_ROOT = PROJECT_DIR.parent
 INPUT_ZIP = REPO_ROOT / "input_data" / "orbit_workshop_inputs.zip"
 
+REQUIRED_INPUT_FILES = (
+    "orbital_elements.json",
+    "data_manifest.json",
+    "world_map.txt",
+)
 
-def unpack_workshop_inputs() -> None:
-    """Unzip workshop GP JSON + map + manifest into IN_DIR. Do not invent files."""
-    if not INPUT_ZIP.is_file():
+# Fields every CelesTrak GP / OMM JSON record must have for this project.
+REQUIRED_GP_FIELDS = (
+    "OBJECT_NAME",
+    "NORAD_CAT_ID",
+    "EPOCH",
+    "MEAN_MOTION",
+    "ECCENTRICITY",
+    "INCLINATION",
+    "RA_OF_ASC_NODE",
+    "ARG_OF_PERICENTER",
+    "MEAN_ANOMALY",
+)
+
+
+def extract_inputs() -> None:
+    """Ensure the three workshop input files are in IN_DIR (no invented data)."""
+    missing = [name for name in REQUIRED_INPUT_FILES if not (IN_DIR / name).is_file()]
+
+    if not missing:
+        print(f"Input files already present in {IN_DIR}")
+    else:
+        if not INPUT_ZIP.is_file() or not zipfile.is_zipfile(INPUT_ZIP):
+            raise FileNotFoundError(
+                f"Missing or invalid input zip: {INPUT_ZIP}\n"
+                "Place orbit_workshop_inputs.zip under input_data/ and try again."
+            )
+        print(f"Extracting {', '.join(REQUIRED_INPUT_FILES)} from {INPUT_ZIP}")
+        with zipfile.ZipFile(INPUT_ZIP, "r") as zf:
+            names_in_zip = set(zf.namelist())
+            for name in REQUIRED_INPUT_FILES:
+                if name not in names_in_zip:
+                    raise FileNotFoundError(f"Zip is missing required file: {name}")
+                zf.extract(name, IN_DIR)
+
+    still_missing = [name for name in REQUIRED_INPUT_FILES if not (IN_DIR / name).is_file()]
+    if still_missing:
         raise FileNotFoundError(
-            f"Missing input zip: {INPUT_ZIP}\n"
-            "Place orbit_workshop_inputs.zip under input_data/ and try again."
+            "Required input file(s) missing after extract: "
+            + ", ".join(still_missing)
         )
-    with zipfile.ZipFile(INPUT_ZIP, "r") as zf:
-        zf.extractall(IN_DIR)
+
+
+def read_gp_json(path: Path) -> list:
+    """Load CelesTrak GP JSON (OMM field names) and check required fields.
+
+    OMM JSON is easier than classic TLEs: fields have clear names instead of
+    fixed character columns, and dates use ISO-8601. It also supports six-digit
+    catalog numbers, which the old 5-digit TLE format cannot store.
+    """
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a JSON list of GP records in {path}")
+
+    for i, record in enumerate(data):
+        if not isinstance(record, dict):
+            raise ValueError(f"GP record {i} is not an object in {path}")
+        missing = [key for key in REQUIRED_GP_FIELDS if key not in record]
+        if missing:
+            raise ValueError(
+                f"GP record {i} missing field(s) {missing} in {path}"
+            )
+
+    return data
+
+
+def parse_gp_epoch(text: str) -> datetime:
+    """Parse a CelesTrak EPOCH string as UTC (no offset in the text)."""
+    return datetime.fromisoformat(text.rstrip("Z")).replace(tzinfo=timezone.utc)
+
+
+def parse_gp_elements(rec: dict) -> dict:
+    """Convert one GP record into Kepler elements in model units (km, rad, s).
+
+    GP field → symbol / conversion (SGP4 mean elements; two-body use is approximate):
+      MEAN_MOTION       n     rev/day → rad/s  (× 2π / 86400)
+      (derived)         a     km via Kepler    a = (μ / n²)^(1/3)
+      ECCENTRICITY      e     already decimal  (unitless)
+      INCLINATION       i     deg → rad
+      RA_OF_ASC_NODE    Ω     deg → rad
+      ARG_OF_PERICENTER ω     deg → rad
+      MEAN_ANOMALY      M₀    deg → rad
+      EPOCH             t₀    ISO text → UTC datetime
+    """
+    name = rec["OBJECT_NAME"]
+    norad_id = int(rec["NORAD_CAT_ID"])
+    n_rad_s = 2.0 * math.pi * float(rec["MEAN_MOTION"]) / 86400.0
+    a_km = (MU_EARTH_KM3_S2 / n_rad_s**2) ** (1.0 / 3.0)
+
+    return {
+        "name": name,
+        "norad_id": norad_id,
+        "label": f"{name} [{norad_id}]",
+        "epoch": parse_gp_epoch(rec["EPOCH"]),
+        "n_rad_s": n_rad_s,
+        "a_km": a_km,
+        "e": float(rec["ECCENTRICITY"]),
+        "i_rad": math.radians(float(rec["INCLINATION"])),
+        "raan_rad": math.radians(float(rec["RA_OF_ASC_NODE"])),
+        "argp_rad": math.radians(float(rec["ARG_OF_PERICENTER"])),
+        "M0_rad": math.radians(float(rec["MEAN_ANOMALY"])),
+    }
+
+
+def elements_table(elements: list) -> list[str]:
+    """Return text-table lines for orbit elements (angles shown in degrees)."""
+    headers = (
+        f"{'name':<28} {'NORAD':>6}  {'epoch_utc':<24}  "
+        f"{'a_km':>10}  {'e':>10}  "
+        f"{'i_deg':>8}  {'raan_deg':>9}  {'argp_deg':>9}  {'M0_deg':>8}"
+    )
+    lines = [headers, "-" * len(headers)]
+    for el in elements:
+        lines.append(
+            f"{el['name']:<28} {el['norad_id']:>6}  "
+            f"{el['epoch'].strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]:<24}  "
+            f"{el['a_km']:>10.3f}  {el['e']:>10.7f}  "
+            f"{math.degrees(el['i_rad']):>8.4f}  "
+            f"{math.degrees(el['raan_rad']):>9.4f}  "
+            f"{math.degrees(el['argp_rad']):>9.4f}  "
+            f"{math.degrees(el['M0_rad']):>8.4f}"
+        )
+    return lines
 
 
 def print_configuration() -> None:
     """Show the Stage 1 setup so we can verify paths and constants."""
-    print("Satellite Orbit Explorer — Stage 1 setup")
+    print("Satellite Orbit Explorer — configuration")
     print(f"  PROJECT_DIR     = {PROJECT_DIR}")
     print(f"  IN_DIR          = {IN_DIR}")
     print(f"  OUT_DIR         = {OUT_DIR}")
@@ -85,10 +205,245 @@ def print_configuration() -> None:
     print(f"  DURATION_HOURS  = {DURATION_HOURS}")
     print(f"  LIVE_GROUP      = {LIVE_GROUP}")
     print(f"  INPUT_ZIP       = {INPUT_ZIP}")
-    print(f"  IN_DIR files    = {sorted(p.name for p in IN_DIR.iterdir())}")
+
+
+def build_time_grid(elements: list) -> tuple[datetime, datetime, list[datetime]]:
+    """One common UTC grid for all satellites (includes both ends).
+
+    Each GP record is still propagated from its own epoch, so prediction error
+    grows with (start - epoch). The workshop QZS-2 record is from 2026-10-17.
+    """
+    if not elements:
+        raise ValueError("elements is empty; load and parse GP records first")
+
+    newest_epoch = max(el["epoch"] for el in elements)
+    start = datetime(
+        newest_epoch.year, newest_epoch.month, newest_epoch.day, tzinfo=timezone.utc
+    )
+    end = start + timedelta(hours=DURATION_HOURS)
+    step = timedelta(seconds=STEP_SECONDS)
+    n_points = (end - start) // step + 1
+    times = [start + i * step for i in range(n_points)]
+    return start, end, times
+
+
+def print_epoch_offsets(elements: list, start: datetime) -> None:
+    """Print start-minus-epoch offsets; flag records older than 7 days as stale."""
+    print("Epoch offsets relative to common window start:")
+    for el in elements:
+        offset_days = (start - el["epoch"]).total_seconds() / 86400.0
+        stale = "  STALE RECORD (>7 days)" if offset_days > 7.0 else ""
+        print(
+            f"  {el['label']}: epoch={el['epoch'].isoformat()}  "
+            f"offset={offset_days:.3f} days{stale}"
+        )
+
+
+# J2000 epoch for GMST (IAU-1982 / Meeus): 2000-01-01 12:00 UTC
+J2000_UTC = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def solve_kepler(M: float, e: float, tol: float = 1e-12, max_iter: int = 50) -> float:
+    """Solve Kepler's equation M = E - e*sin(E) with Newton-Raphson."""
+    M = math.fmod(M, 2.0 * math.pi)
+    if M < 0.0:
+        M += 2.0 * math.pi
+
+    E = math.pi if e > 0.8 else M
+    for _ in range(max_iter):
+        f = E - e * math.sin(E) - M
+        fp = 1.0 - e * math.cos(E)
+        delta = f / fp
+        E -= delta
+        if abs(f) < tol and abs(delta) < tol:
+            return E
+    raise RuntimeError(
+        f"solve_kepler did not converge in {max_iter} iterations "
+        f"(M={M}, e={e}, residual={E - e * math.sin(E) - M})"
+    )
+
+
+def gmst_rad(t: datetime) -> float:
+    """Greenwich Mean Sidereal Time [rad], IAU-1982 (Meeus eq. 12.4)."""
+    if t.tzinfo is None:
+        raise ValueError("gmst_rad expects a timezone-aware UTC datetime")
+    d = (t.astimezone(timezone.utc) - J2000_UTC).total_seconds() / 86400.0
+    T = d / 36525.0
+    theta_deg = (
+        280.46061837
+        + 360.98564736629 * d
+        + 0.000387933 * T**2
+        - T**3 / 38710000.0
+    )
+    theta_deg = theta_deg % 360.0
+    if theta_deg < 0.0:
+        theta_deg += 360.0
+    return math.radians(theta_deg)
+
+
+def propagate(el: dict, times: list) -> list:
+    """Propagate one satellite on the shared UTC grid (educational two-body model)."""
+    if not times:
+        raise ValueError("times is empty; build the Stage 4 time grid first")
+
+    a = el["a_km"]
+    e = el["e"]
+    i = el["i_rad"]
+    raan = el["raan_rad"]
+    argp = el["argp_rad"]
+    M0 = el["M0_rad"]
+    n = el["n_rad_s"]
+    epoch = el["epoch"]
+    mu = MU_EARTH_KM3_S2
+
+    points = []
+    for t in times:
+        # 1) Mean anomaly advances from epoch: M = M0 + n*(t - epoch), mod 2π
+        dt_s = (t - epoch).total_seconds()
+        M = (M0 + n * dt_s) % (2.0 * math.pi)
+
+        # 2) Solve Kepler's equation for eccentric anomaly E
+        E = solve_kepler(M, e)
+
+        # 3) Radius, true anomaly ν, and argument of latitude u = ω + ν
+        cos_E = math.cos(E)
+        sin_E = math.sin(E)
+        r = a * (1.0 - e * cos_E)
+        nu = math.atan2(math.sqrt(1.0 - e * e) * sin_E, cos_E - e)
+        u = argp + nu
+
+        # 4) Position in inertial (equatorial) axes
+        cos_u = math.cos(u)
+        sin_u = math.sin(u)
+        cos_raan = math.cos(raan)
+        sin_raan = math.sin(raan)
+        cos_i = math.cos(i)
+        sin_i = math.sin(i)
+        x = r * (cos_raan * cos_u - sin_raan * sin_u * cos_i)
+        y = r * (sin_raan * cos_u + cos_raan * sin_u * cos_i)
+        z = r * (sin_u * sin_i)
+
+        # 5) Rotate by GMST into Earth-fixed axes (simple Greenwich rotation)
+        theta = gmst_rad(t)
+        cos_th = math.cos(theta)
+        sin_th = math.sin(theta)
+        x_ecef = cos_th * x + sin_th * y
+        y_ecef = -sin_th * x + cos_th * y
+
+        # 6) Spherical lat/lon [deg] and altitude above spherical Earth [km]
+        lat_deg = math.degrees(math.atan2(z, math.hypot(x_ecef, y_ecef)))
+        lon_deg = math.degrees(math.atan2(y_ecef, x_ecef))
+        alt_km = r - EARTH_RADIUS_KM
+
+        # 7) Vis-viva orbital speed [km/s]
+        speed_km_s = math.sqrt(mu * (2.0 / r - 1.0 / a))
+
+        points.append(
+            {
+                "time": t,
+                "lat_deg": lat_deg,
+                "lon_deg": lon_deg,
+                "alt_km": alt_km,
+                "speed_km_s": speed_km_s,
+            }
+        )
+    return points
+
+
+def run_propagation_checks(elements: list, tracks: list) -> None:
+    """Sanity checks for Kepler, GMST, and SES-5 longitude (no forced offsets)."""
+    # GMST at J2000 ≈ 280.46 degrees
+    gmst_j2000_deg = math.degrees(gmst_rad(J2000_UTC))
+    assert abs(gmst_j2000_deg - 280.46) < 0.01, (
+        f"GMST at J2000 expected ~280.46 deg, got {gmst_j2000_deg}"
+    )
+
+    # Kepler residual below 1e-10 for a few (M, e) samples
+    for M_sample, e_sample in ((0.0, 0.0), (1.0, 0.1), (math.pi, 0.5), (5.0, 0.75)):
+        E = solve_kepler(M_sample, e_sample)
+        M_wrapped = M_sample % (2.0 * math.pi)
+        if M_wrapped < 0.0:
+            M_wrapped += 2.0 * math.pi
+        residual = abs(E - e_sample * math.sin(E) - M_wrapped)
+        assert residual < 1e-10, (
+            f"Kepler residual {residual} for M={M_sample}, e={e_sample}"
+        )
+
+    # SES-5 (NORAD 38652) should sit near ~5°E if GMST / rotation signs are correct
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+    for el, track in zip(elements, tracks):
+        if el["norad_id"] != 38652:
+            continue
+        if not track:
+            raise ValueError("SES-5 track is empty")
+        lons = [p["lon_deg"] for p in track]
+        lon_min, lon_max = min(lons), max(lons)
+        assert 4.0 <= lon_min and lon_max <= 6.0, (
+            "SES-5 longitude should stay between 4° and 6° East; "
+            f"got [{lon_min:.3f}, {lon_max:.3f}]. "
+            "Check GMST or ECEF rotation signs — do not add a longitude offset."
+        )
+        print(
+            f"SES-5 longitude check OK: "
+            f"[{lon_min:.3f}, {lon_max:.3f}] deg East"
+        )
+        break
+
+
+def print_track_samples(elements: list, tracks: list) -> None:
+    """Print first, middle, and last propagated point for each satellite."""
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+    print("Propagation samples (first / middle / last):")
+    for el, track in zip(elements, tracks):
+        if not track:
+            raise ValueError(f"Empty track for {el['label']}")
+        mid = len(track) // 2
+        print(f"  {el['label']}")
+        for tag, p in (("first", track[0]), ("middle", track[mid]), ("last", track[-1])):
+            print(
+                f"    {tag:6s}  {p['time'].isoformat()}  "
+                f"lat={p['lat_deg']:8.3f}  lon={p['lon_deg']:8.3f}  "
+                f"alt_km={p['alt_km']:8.1f}  speed_km_s={p['speed_km_s']:6.3f}"
+            )
 
 
 if __name__ == "__main__":
     # UTC keeps time unambiguous worldwide (no local daylight-saving surprises).
-    unpack_workshop_inputs()
+    extract_inputs()
     print_configuration()
+
+    sats = read_gp_json(IN_DIR / "orbital_elements.json")
+    with (IN_DIR / "data_manifest.json").open(encoding="utf-8") as f:
+        data_manifest = json.load(f)
+
+    source_note = (
+        "Native CelesTrak GP JSON (OMM field names) retrieved_utc="
+        f"{data_manifest['retrieved_utc']}"
+    )
+    print(source_note)
+    for sat in sats:
+        print(
+            f"  {sat['OBJECT_NAME']}  NORAD={sat['NORAD_CAT_ID']}  "
+            f"EPOCH={sat['EPOCH']}"
+        )
+
+    elements = [parse_gp_elements(s) for s in sats]
+    print("Kepler elements (two-body units; GP mean elements → approximate):")
+    for line in elements_table(elements):
+        print(line)
+
+    start, end, times = build_time_grid(elements)
+    n_points = len(times)
+    print("Common UTC time window:")
+    print(f"  start          = {start.isoformat()}")
+    print(f"  end            = {end.isoformat()}")
+    print(f"  DURATION_HOURS = {DURATION_HOURS}")
+    print(f"  STEP_SECONDS   = {STEP_SECONDS}")
+    print(f"  n_points       = {n_points}")
+    print_epoch_offsets(elements, start)
+
+    tracks = [propagate(el, times) for el in elements]
+    run_propagation_checks(elements, tracks)
+    print_track_samples(elements, tracks)
