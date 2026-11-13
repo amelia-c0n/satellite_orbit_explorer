@@ -1,0 +1,20 @@
+Satellite Orbit Report - built during Space Career Week 2026, GNSS Academy
+Native CelesTrak GP JSON (OMM field names) retrieved_utc=2026-11-10T16:30:32Z
+Window: 2026-11-10T00:00:00+00:00 → 2026-11-11T00:00:00+00:00  (DURATION_HOURS=24, STEP_SECONDS=5)
+Model caveat: educational two-body Kepler + spherical Earth + GMST; GP values are SGP4 mean elements — not precision orbit prediction.
+
+Orbit summary:
+name                          NORAD  period_h  perigee_km   apogee_km           e     i_deg    vmin    vmax
+-----------------------------------------------------------------------------------------------------------
+PULSAR-0                      64541     1.578       500.0       505.6   0.0004075   97.4838   7.608   7.614
+GSAT0225 (GALILEO 29)         59598    14.078     23217.4     23226.8   0.0001590   55.2189   3.669   3.670
+SES-5                         38652    23.935     35778.1     35794.2   0.0001910    0.0509   3.074   3.075
+QZS-2 (MICHIBIKI-2)           42738    23.940     32649.6     38934.8   0.0745209   39.2498   2.853   3.313
+
+Kepler elements:
+name                          NORAD  epoch_utc                       a_km           e     i_deg   raan_deg   argp_deg    M0_deg
+-------------------------------------------------------------------------------------------------------------------------------
+PULSAR-0                      64541  2026-11-10T04:10:34.900     6880.971   0.0004075   97.4838    67.6279    54.1589  306.0025
+GSAT0225 (GALILEO 29)         59598  2026-11-09T08:30:06.579    29600.256   0.0001590   55.2189    97.0227   171.2097  226.8931
+SES-5                         38652  2026-11-10T04:02:09.139    42164.283   0.0001910    0.0509    32.2008   188.0056  254.6756
+QZS-2 (MICHIBIKI-2)           42738  2026-10-17T15:21:52.982    42170.355   0.0745209   39.2498   241.3539   270.8929  243.8231

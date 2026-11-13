@@ -409,6 +409,367 @@ def print_track_samples(elements: list, tracks: list) -> None:
             )
 
 
+def orbit_summary(el: dict, pts: list) -> dict:
+    """Compute period, altitudes, and speed range for one satellite.
+
+    Workshop interpretation (approximate two-body values from GP means):
+      PULSAR-0  ~1.58 h, i~97.5°  → retrograde near-polar (sun-synchronous-class)
+      Galileo 29 ~14.08 h         → MEO / GNSS
+      SES-5 / QZS-2 ~23.93 h      → about one sidereal day (geosynchronous)
+      QZS-2 e~0.07, i~39°         → IGSO (inclined geosynchronous), not geostationary
+    """
+    if not pts:
+        raise ValueError(f"No propagated points for {el.get('label', el.get('name'))}")
+
+    speeds = [p["speed_km_s"] for p in pts]
+    a = el["a_km"]
+    e = el["e"]
+    return {
+        "name": el["name"],
+        "norad_id": el["norad_id"],
+        "period_h": 2.0 * math.pi / el["n_rad_s"] / 3600.0,
+        "perigee_km": a * (1.0 - e) - EARTH_RADIUS_KM,
+        "apogee_km": a * (1.0 + e) - EARTH_RADIUS_KM,
+        "e": e,
+        "i_deg": math.degrees(el["i_rad"]),
+        "speed_min_km_s": min(speeds),
+        "speed_max_km_s": max(speeds),
+    }
+
+
+def summary_table(summaries: list) -> list[str]:
+    """Return text-table lines for orbit summaries (reused in Stage 8)."""
+    headers = (
+        f"{'name':<28} {'NORAD':>6}  {'period_h':>8}  "
+        f"{'perigee_km':>10}  {'apogee_km':>10}  {'e':>10}  {'i_deg':>8}  "
+        f"{'vmin':>6}  {'vmax':>6}"
+    )
+    lines = [headers, "-" * len(headers)]
+    for s in summaries:
+        lines.append(
+            f"{s['name']:<28} {s['norad_id']:>6}  {s['period_h']:>8.3f}  "
+            f"{s['perigee_km']:>10.1f}  {s['apogee_km']:>10.1f}  "
+            f"{s['e']:>10.7f}  {s['i_deg']:>8.4f}  "
+            f"{s['speed_min_km_s']:>6.3f}  {s['speed_max_km_s']:>6.3f}"
+        )
+    return lines
+
+
+def check_galileo_period(summaries: list) -> None:
+    """Galileo 29 (NORAD 59598) should have period ~14.08 h."""
+    for s in summaries:
+        if s["norad_id"] != 59598:
+            continue
+        assert 14.0 <= s["period_h"] <= 14.2, (
+            f"Galileo 29 period_h expected in [14.0, 14.2], got {s['period_h']}"
+        )
+        print(f"Galileo 29 period check OK: {s['period_h']:.4f} h")
+        break
+
+
+# One color per satellite (Stage 8 reuses this list).
+COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+
+
+def load_coastline(path: Path) -> list:
+    """Load world_map.txt: 'latitude longitude' lines; blank lines split segments.
+
+    Returns a list of segments of (lon, lat) points. Never join across blanks —
+    that would draw false lines across oceans.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing coastline file: {path}")
+
+    segments: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            text = line.strip()
+            if not text:
+                if current:
+                    segments.append(current)
+                    current = []
+                continue
+            lat_s, lon_s = text.split()
+            # File order is latitude first; we store (lon, lat) for plotting.
+            current.append((float(lon_s), float(lat_s)))
+    if current:
+        segments.append(current)
+    if not segments:
+        raise ValueError(f"No coastline segments found in {path}")
+    return segments
+
+
+def plot_ground_tracks(elements: list, tracks: list, coastline: list) -> Path:
+    """Figure 1: gray coast + scatter ground tracks (dots avoid ±180° false lines).
+
+    What you should see (workshop sats):
+      PULSAR-0 — many passes shifting west (fast LEO + Earth rotation)
+      Galileo  — a wide wave (MEO)
+      SES-5    — one spot (period ≈ Earth rotation; geostationary-like)
+      QZS-2    — asymmetric figure-8 (IGSO: ~sidereal day, i≈39°, slow N apogee)
+    """
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    for segment in coastline:
+        lons = [p[0] for p in segment]
+        lats = [p[1] for p in segment]
+        ax.plot(lons, lats, color="0.6", linewidth=0.4, zorder=1)
+
+    for i, (el, track) in enumerate(zip(elements, tracks)):
+        color = COLORS[i % len(COLORS)]
+        lons = [p["lon_deg"] for p in track]
+        lats = [p["lat_deg"] for p in track]
+        ax.scatter(
+            lons,
+            lats,
+            s=2,
+            c=color,
+            label=el["label"],
+            zorder=2,
+            linewidths=0,
+        )
+
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-90, 90)
+    ax.set_xlabel("Longitude [deg]")
+    ax.set_ylabel("Latitude [deg]")
+    ax.set_title("Ground tracks (24 h educational Kepler propagation)")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linewidth=0.3, alpha=0.5)
+    ax.legend(loc="upper left", fontsize=8, markerscale=3)
+    fig.tight_layout()
+
+    out_path = OUT_DIR / "ground_tracks.png"
+    fig.savefig(out_path, dpi=200)
+    plt.show()
+    plt.close(fig)
+    return out_path
+
+
+def plot_speed_timeseries(elements: list, tracks: list) -> Path:
+    """Figure 2: stacked speed [km/s] vs UTC time.
+
+    Eccentric orbits (esp. QZS-2) speed up near perigee and slow near apogee.
+    """
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+    if not elements:
+        raise ValueError("elements is empty")
+
+    n = len(elements)
+    fig, axes = plt.subplots(
+        n, 1, sharex=True, figsize=(11, 2.2 * n), squeeze=False
+    )
+    for i, (el, track) in enumerate(zip(elements, tracks)):
+        ax = axes[i, 0]
+        color = COLORS[i % len(COLORS)]
+        times_plot = [p["time"] for p in track]
+        speeds = [p["speed_km_s"] for p in track]
+        ax.plot(times_plot, speeds, color=color, linewidth=1.0)
+        ax.set_ylabel("km/s")
+        ax.set_title(el["label"], fontsize=10, loc="left")
+        ax.grid(True, linewidth=0.3, alpha=0.5)
+        ax.ticklabel_format(axis="y", useOffset=False)
+
+    axes[-1, 0].set_xlabel("UTC time")
+    fig.suptitle("Orbital speed vs time (vis-viva)", fontsize=12)
+    fig.tight_layout()
+
+    out_path = OUT_DIR / "velocity_timeseries.png"
+    fig.savefig(out_path, dpi=200)
+    plt.show()
+    plt.close(fig)
+    return out_path
+
+
+# KML 2.2 + Google Earth gx extensions
+KML_NS = "http://www.opengis.net/kml/2.2"
+GX_NS = "http://www.google.com/kml/ext/2.2"
+ET.register_namespace("", KML_NS)
+ET.register_namespace("gx", GX_NS)
+
+KML_ICON_HREF = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
+ANIM_STEP_SECONDS = 60  # subsample 5 s grid to one point per minute for animation
+
+
+def _kml(tag: str) -> str:
+    return f"{{{KML_NS}}}{tag}"
+
+
+def _gx(tag: str) -> str:
+    return f"{{{GX_NS}}}{tag}"
+
+
+def matplotlib_color_to_kml_abgr(color) -> str:
+    """Convert Matplotlib colour to KML aabbggrr (e.g. tab:blue #1f77b4 → ffb4771f)."""
+    hex_rrggbb = to_hex(color).lstrip("#")
+    if len(hex_rrggbb) != 6:
+        raise ValueError(f"Expected RRGGBB hex from to_hex, got {hex_rrggbb!r}")
+    rr, gg, bb = hex_rrggbb[0:2], hex_rrggbb[2:4], hex_rrggbb[4:6]
+    return f"ff{bb}{gg}{rr}"
+
+
+def _add_kml_style(document: ET.Element, style_id: str, color_abgr: str) -> None:
+    """Icon + line style; white circle icon so the colour tint shows."""
+    style = ET.SubElement(document, _kml("Style"), {"id": style_id})
+    icon_style = ET.SubElement(style, _kml("IconStyle"))
+    ET.SubElement(icon_style, _kml("color")).text = color_abgr
+    icon = ET.SubElement(icon_style, _kml("Icon"))
+    ET.SubElement(icon, _kml("href")).text = KML_ICON_HREF
+    line_style = ET.SubElement(style, _kml("LineStyle"))
+    ET.SubElement(line_style, _kml("color")).text = color_abgr
+    ET.SubElement(line_style, _kml("width")).text = "2"
+
+
+def _write_kml(path: Path, root: ET.Element) -> Path:
+    tree = ET.ElementTree(root)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+    return path
+
+
+def write_orbit_tracks_ecef_kml(elements: list, tracks: list) -> Path:
+    """Earth-fixed 3D orbits: one absolute LineString per satellite (alt in metres)."""
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+
+    root = ET.Element(_kml("kml"))
+    document = ET.SubElement(root, _kml("Document"))
+    ET.SubElement(document, _kml("name")).text = "Multi-Satellite Orbits | Earth-fixed"
+
+    for i, (el, track) in enumerate(zip(elements, tracks)):
+        if not track:
+            raise ValueError(f"Empty track for {el['label']}")
+        style_id = f"style-{el['norad_id']}"
+        color_abgr = matplotlib_color_to_kml_abgr(COLORS[i % len(COLORS)])
+        _add_kml_style(document, style_id, color_abgr)
+
+        placemark = ET.SubElement(document, _kml("Placemark"))
+        ET.SubElement(placemark, _kml("name")).text = el["label"]
+        ET.SubElement(placemark, _kml("styleUrl")).text = f"#{style_id}"
+        line = ET.SubElement(placemark, _kml("LineString"))
+        ET.SubElement(line, _kml("altitudeMode")).text = "absolute"
+        # KML coordinates: lon,lat,alt_m (space-separated points)
+        coords = " ".join(
+            f"{p['lon_deg']:.6f},{p['lat_deg']:.6f},{p['alt_km'] * 1000.0:.1f}"
+            for p in track
+        )
+        ET.SubElement(line, _kml("coordinates")).text = coords
+
+    return _write_kml(OUT_DIR / "orbit_tracks_ecef.kml", root)
+
+
+def _subsample_track_60s(track: list) -> list:
+    """Keep one propagated point per ANIM_STEP_SECONDS."""
+    if STEP_SECONDS <= 0 or ANIM_STEP_SECONDS % STEP_SECONDS != 0:
+        raise ValueError("ANIM_STEP_SECONDS must be a multiple of STEP_SECONDS")
+    stride = ANIM_STEP_SECONDS // STEP_SECONDS
+    return track[::stride]
+
+
+def _split_tracks_at_dateline(points: list) -> list[list]:
+    """Start a new segment wherever longitude jumps by more than 180°."""
+    if not points:
+        return []
+    segments = [[points[0]]]
+    for prev, cur in zip(points, points[1:]):
+        if abs(cur["lon_deg"] - prev["lon_deg"]) > 180.0:
+            segments.append([cur])
+        else:
+            segments[-1].append(cur)
+    return segments
+
+
+def write_orbit_animation_kml(elements: list, tracks: list) -> Path:
+    """Animated ground tracks: gx:MultiTrack, clampToGround, date-line splits."""
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+
+    root = ET.Element(_kml("kml"))
+    document = ET.SubElement(root, _kml("Document"))
+    ET.SubElement(document, _kml("name")).text = (
+        "Multi-Satellite Ground Tracks | Animation"
+    )
+
+    for i, (el, track) in enumerate(zip(elements, tracks)):
+        if not track:
+            raise ValueError(f"Empty track for {el['label']}")
+        style_id = f"style-anim-{el['norad_id']}"
+        color_abgr = matplotlib_color_to_kml_abgr(COLORS[i % len(COLORS)])
+        _add_kml_style(document, style_id, color_abgr)
+
+        placemark = ET.SubElement(document, _kml("Placemark"))
+        ET.SubElement(placemark, _kml("name")).text = el["label"]
+        ET.SubElement(placemark, _kml("styleUrl")).text = f"#{style_id}"
+        multi = ET.SubElement(placemark, _gx("MultiTrack"))
+
+        for segment in _split_tracks_at_dateline(_subsample_track_60s(track)):
+            gx_track = ET.SubElement(multi, _gx("Track"))
+            ET.SubElement(gx_track, _kml("altitudeMode")).text = "clampToGround"
+            # All <when> first, then matching <gx:coord> (KML Track convention)
+            for p in segment:
+                t = p["time"].astimezone(timezone.utc)
+                ET.SubElement(gx_track, _kml("when")).text = t.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+            for p in segment:
+                ET.SubElement(gx_track, _gx("coord")).text = (
+                    f"{p['lon_deg']:.6f} {p['lat_deg']:.6f} 0"
+                )
+
+    return _write_kml(OUT_DIR / "orbit_animation.kml", root)
+
+
+def write_orbit_report(
+    path: Path,
+    source_note: str,
+    start: datetime,
+    end: datetime,
+    elements: list,
+    summaries: list,
+) -> Path:
+    """Plain-text report for demo/submit (reuses summary and elements tables)."""
+    model_caveat = (
+        "Model caveat: educational two-body Kepler + spherical Earth + GMST; "
+        "GP values are SGP4 mean elements — not precision orbit prediction."
+    )
+    lines = [
+        "Satellite Orbit Report - built during Space Career Week 2026, GNSS Academy",
+        source_note,
+        (
+            f"Window: {start.isoformat()} → {end.isoformat()}  "
+            f"(DURATION_HOURS={DURATION_HOURS}, STEP_SECONDS={STEP_SECONDS})"
+        ),
+        model_caveat,
+        "",
+        "Orbit summary:",
+        *summary_table(summaries),
+        "",
+        "Kepler elements:",
+        *elements_table(elements),
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def zip_orbit_outputs(paths: list[Path]) -> Path:
+    """Zip the five deliverables into OUT_DIR / satellite_orbit_outputs.zip."""
+    if len(paths) != 5:
+        raise ValueError(f"Expected 5 output files to zip, got {len(paths)}")
+    for p in paths:
+        if not p.is_file():
+            raise FileNotFoundError(f"Missing output to zip: {p}")
+
+    zip_path = OUT_DIR / "satellite_orbit_outputs.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in paths:
+            zf.write(p, arcname=p.name)
+    return zip_path
+
+
 if __name__ == "__main__":
     # UTC keeps time unambiguous worldwide (no local daylight-saving surprises).
     extract_inputs()
@@ -447,3 +808,37 @@ if __name__ == "__main__":
     tracks = [propagate(el, times) for el in elements]
     run_propagation_checks(elements, tracks)
     print_track_samples(elements, tracks)
+
+    if len(elements) != len(tracks):
+        raise ValueError("elements and tracks length mismatch")
+    summaries = [orbit_summary(el, pts) for el, pts in zip(elements, tracks)]
+    print("Orbit summary:")
+    for line in summary_table(summaries):
+        print(line)
+    check_galileo_period(summaries)
+
+    coastline = load_coastline(IN_DIR / "world_map.txt")
+    ground_path = plot_ground_tracks(elements, tracks, coastline)
+    speed_path = plot_speed_timeseries(elements, tracks)
+    print(f"Saved ground tracks: {ground_path} ({ground_path.stat().st_size} bytes)")
+    print(f"Saved speed plot:    {speed_path} ({speed_path.stat().st_size} bytes)")
+
+    ecef_kml = write_orbit_tracks_ecef_kml(elements, tracks)
+    anim_kml = write_orbit_animation_kml(elements, tracks)
+    report_path = write_orbit_report(
+        OUT_DIR / "orbit_report.txt",
+        source_note,
+        start,
+        end,
+        elements,
+        summaries,
+    )
+    zip_path = zip_orbit_outputs(
+        [ground_path, speed_path, ecef_kml, anim_kml, report_path]
+    )
+    print(f"Saved ECEF KML:      {ecef_kml} ({ecef_kml.stat().st_size} bytes)")
+    print(f"Saved animation KML: {anim_kml} ({anim_kml.stat().st_size} bytes)")
+    print(f"Saved report:        {report_path} ({report_path.stat().st_size} bytes)")
+    print(f"Saved zip:           {zip_path} ({zip_path.stat().st_size} bytes)")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        print(f"Zip members: {zf.namelist()}")

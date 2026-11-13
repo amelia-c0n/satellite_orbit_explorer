@@ -16,15 +16,15 @@ We load real CelesTrak GP orbital data, explain how satellites move with a simpl
 7. Plots
 8. KML and report
 
-## Setup and run
+## Setup and run (checklist)
 
-```bash
-cd satellite_orbit_explorer
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python orbit_explorer.py
-```
+1. `cd satellite_orbit_explorer`
+2. `python3 -m venv .venv` (first time only)
+3. `source .venv/bin/activate`
+4. `pip install -r requirements.txt` (first time / when deps change)
+5. `python orbit_explorer.py`
+6. Find outputs in `satellite_orbit_explorer/data/output/`
+7. Optional: open `satellite_orbit_outputs.zip` or the individual PNG / KML / report files
 
 ## Input data
 
@@ -77,3 +77,50 @@ Each record is still propagated from **its own epoch**, so error grows as the wi
 ## Propagation (Stage 5)
 
 We advance each orbit with two-body Kepler math, then rotate into Earth-fixed coordinates with GMST (simple Greenwich rotation) to get lat/lon/alt and vis-viva speed. SES-5 staying near about **5°E** is a sanity check that the GMST / rotation signs are right — not a forced longitude offset.
+
+## Orbit summary (Stage 6)
+
+Approximate two-body values from the workshop GP records:
+
+| Satellite | What the numbers mean |
+|-----------|------------------------|
+| **PULSAR-0** | Period ~**1.58 h**, inclination ~**97.5°** → retrograde, near-polar, sun-synchronous-class LEO |
+| **Galileo 29** | Period ~**14.08 h** → medium Earth / GNSS |
+| **SES-5** | Period ~**23.93 h** (≈ one sidereal day), near-equatorial → geostationary-like |
+| **QZS-2** | Period ~**23.93 h**, but **e ~ 0.07** and **i ~ 39°** → inclined geosynchronous (**IGSO**), not geostationary |
+
+## Plots (Stage 7)
+
+Saved under `satellite_orbit_explorer/data/output/`:
+
+- `ground_tracks.png` — coastline + scatter ground tracks (scatter avoids fake lines across ±180°)
+- `velocity_timeseries.png` — speed vs UTC time, one panel per satellite
+
+**How to read the ground tracks**
+- **PULSAR-0:** many passes shifting west (fast LEO + Earth rotating underneath)
+- **Galileo 29:** a wide wave (MEO)
+- **SES-5:** essentially one spot — period ≈ Earth’s rotation (geostationary-like)
+- **QZS-2:** asymmetric figure-8 — same ~sidereal-day period, but inclination ~39° and a slow northern apogee (IGSO)
+
+**How to read the speed plots:** eccentric orbits (especially QZS-2) go faster near perigee and slower near apogee.
+
+## KML + report (Stage 8)
+
+Also written under `satellite_orbit_explorer/data/output/`:
+
+| File | What it is |
+|------|------------|
+| `orbit_tracks_ecef.kml` | 3D Earth-fixed orbits (`LineString`, absolute altitude in metres) |
+| `orbit_animation.kml` | Ground-track animation (`gx:MultiTrack`, clamp to ground, 60 s steps) |
+| `orbit_report.txt` | Text report: source note, window, summary + elements tables |
+| `satellite_orbit_outputs.zip` | All five deliverables (2 PNG + 2 KML + report) |
+
+### Open in Google Earth Pro
+
+1. Install / open [Google Earth Pro](https://www.google.com/earth/versions/#earth-pro)
+2. **File → Open** and choose `orbit_tracks_ecef.kml` to see the 3D orbit lines in space
+3. Open `orbit_animation.kml` for the moving ground-track animation
+4. Use the time slider / animation controls at the top of Earth Pro to **play** the tracks
+5. Toggle placemarks in the Places panel to show/hide individual satellites
+
+Colours match the Matplotlib figures (blue / orange / green / red).
