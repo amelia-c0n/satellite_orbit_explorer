@@ -54,8 +54,10 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 STEP_SECONDS = 5
 DURATION_HOURS = 24
 
-# Optional later: live CelesTrak group download. Unused in early stages.
+# Optional live CelesTrak GROUP (e.g. "STATIONS"). None = workshop snapshot only.
 LIVE_GROUP = None
+# CelesTrak asks users not to poll — refresh cache only after this age.
+LIVE_CACHE_MAX_AGE_S = 2 * 3600
 
 # Repo-root zip with workshop GP JSON and supporting files.
 REPO_ROOT = PROJECT_DIR.parent
@@ -132,6 +134,70 @@ def read_gp_json(path: Path) -> list:
             )
 
     return data
+
+
+def apply_live_group_if_requested(sats: list, source_note: str) -> tuple[list, str]:
+    """Optional: replace workshop sats with a cached CelesTrak GROUP download.
+
+    If LIVE_GROUP is None, keep the workshop snapshot. Otherwise download
+    (or reuse a cache ≤ 2 hours old), take the first four records by NORAD ID,
+    and update source_note. Never invent satellites.
+    """
+    if LIVE_GROUP is None:
+        print("LIVE_GROUP is None — using workshop snapshot from orbital_elements.json")
+        return sats, source_note
+
+    cache_path = IN_DIR / f"gp_{LIVE_GROUP}.json"
+    url = (
+        "https://celestrak.org/NORAD/elements/gp.php"
+        f"?GROUP={LIVE_GROUP}&FORMAT=JSON"
+    )
+    need_download = True
+    if cache_path.is_file():
+        age_s = time.time() - cache_path.stat().st_mtime
+        if age_s <= LIVE_CACHE_MAX_AGE_S:
+            need_download = False
+            print(
+                f"Using fresh CelesTrak cache {cache_path.name} "
+                f"(age {age_s / 60:.1f} min ≤ 2 h)"
+            )
+
+    if need_download:
+        print(f"Downloading CelesTrak GROUP={LIVE_GROUP} → {cache_path}")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError(
+                f"CelesTrak GROUP={LIVE_GROUP} did not return a JSON list"
+            )
+        with cache_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        retrieved = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        retrieved = datetime.fromtimestamp(
+            cache_path.stat().st_mtime, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    live_sats = read_gp_json(cache_path)
+    live_sats = sorted(live_sats, key=lambda r: int(r["NORAD_CAT_ID"]))
+    if len(live_sats) < 4:
+        raise ValueError(
+            f"GROUP={LIVE_GROUP} has only {len(live_sats)} records; need at least 4"
+        )
+    selected = live_sats[:4]
+    source_note = (
+        f"Live CelesTrak GP JSON GROUP={LIVE_GROUP} "
+        f"retrieved_or_cached_utc={retrieved}"
+    )
+    print(source_note)
+    print(f"Selected first 4 by NORAD_CAT_ID from GROUP={LIVE_GROUP}:")
+    for sat in selected:
+        print(
+            f"  {sat['OBJECT_NAME']}  NORAD={sat['NORAD_CAT_ID']}  "
+            f"EPOCH={sat['EPOCH']}"
+        )
+    return selected, source_note
 
 
 def parse_gp_epoch(text: str) -> datetime:
@@ -789,6 +855,9 @@ if __name__ == "__main__":
             f"  {sat['OBJECT_NAME']}  NORAD={sat['NORAD_CAT_ID']}  "
             f"EPOCH={sat['EPOCH']}"
         )
+
+    # Optional live GROUP download (no-op when LIVE_GROUP is None).
+    sats, source_note = apply_live_group_if_requested(sats, source_note)
 
     elements = [parse_gp_elements(s) for s in sats]
     print("Kepler elements (two-body units; GP mean elements → approximate):")

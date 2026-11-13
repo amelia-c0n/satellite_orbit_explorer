@@ -15,6 +15,7 @@ We load real CelesTrak GP orbital data, explain how satellites move with a simpl
 6. Orbit summary
 7. Plots
 8. KML and report
+9. Optional: live CelesTrak group (`LIVE_GROUP`)
 
 ## Setup and run (checklist)
 
@@ -23,8 +24,19 @@ We load real CelesTrak GP orbital data, explain how satellites move with a simpl
 3. `source .venv/bin/activate`
 4. `pip install -r requirements.txt` (first time / when deps change)
 5. `python orbit_explorer.py`
-6. Find outputs in `satellite_orbit_explorer/data/output/`
+6. Find outputs in `data/output/` (i.e. `satellite_orbit_explorer/data/output/` from the repo root)
 7. Optional: open `satellite_orbit_outputs.zip` or the individual PNG / KML / report files
+
+### Optional: live CelesTrak group
+
+By default `LIVE_GROUP = None` and the script uses the workshop snapshot
+(PULSAR-0, Galileo 29, SES-5, QZS-2).  
+To try live data, set e.g. `LIVE_GROUP = "STATIONS"` in `orbit_explorer.py`, then run again.
+
+- Downloads `https://celestrak.org/NORAD/elements/gp.php?GROUP=...&FORMAT=JSON`
+- Caches under `data/input/gp_<GROUP>.json` and refreshes only if missing or older than **2 hours** (don’t poll CelesTrak)
+- Uses the first four records sorted by `NORAD_CAT_ID`
+- Workshop-only sanity checks (SES-5 longitude, Galileo period) apply when those satellites are present
 
 ## Input data
 
