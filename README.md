@@ -5,6 +5,13 @@ We load real CelesTrak GP orbital data, explain how satellites move with a simpl
 
 **Note:** GP records are SGP4 mean elements. Our model is an educational approximation (Kepler two-body, spherical Earth, simple Greenwich rotation) — not precision orbit prediction.
 
+## Learning guide
+
+Beginner notes on the physics, acronyms, and how they map to this repo:
+
+- Start at [`resources/doc/00-index.md`](resources/doc/00-index.md)
+- Or the short pointer [`resources/doc/orbit-theory-learning.md`](resources/doc/orbit-theory-learning.md)
+
 ## Stages
 
 1. Setup
